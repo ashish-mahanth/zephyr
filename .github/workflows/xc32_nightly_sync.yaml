@@ -15,6 +15,12 @@ name: Weekly Upstream Sync + XC32 Build
 # file on the repository's *default* branch (main), never on xc32-ci, even
 # though the workflow itself only ever acts on xc32-ci. This exact file
 # must also exist on main for the cron below to ever fire.
+#
+# Every other workflow in this repo was manually disabled so only the 3
+# xc32 ones run. Disabling is per-workflow-path, not per-commit, so it
+# survives normal upstream syncs -- but a upstream commit that introduces
+# a *brand-new* workflow file would land enabled by default. The sync job
+# below sweeps for and disables exactly that case every run.
 
 on:
   schedule:
@@ -25,6 +31,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: ${{ github.workflow }}
@@ -65,6 +72,25 @@ jobs:
 
       - name: Push xc32-ci
         run: git push origin xc32-ci
+
+      - name: Disable any newly-added non-xc32 workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          keep_paths=".github/workflows/xc32_samples.yaml .github/workflows/xc32_toolchain_image.yaml .github/workflows/xc32_nightly_sync.yaml"
+          gh api "repos/${{ github.repository }}/actions/workflows" --paginate --jq \
+            '.workflows[] | select(.state != "disabled_manually") | "\(.id)\t\(.path)"' \
+          | while IFS=$'\t' read -r id path; do
+              keep=0
+              for p in $keep_paths; do
+                [ "$path" = "$p" ] && keep=1
+              done
+              if [ "$keep" -eq 0 ]; then
+                echo "Disabling newly active workflow: $path (id=$id)"
+                gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$id/disable"
+              fi
+            done
 
   build:
     needs: sync
