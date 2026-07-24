@@ -1,0 +1,73 @@
+name: Weekly Upstream Sync + XC32 Build
+
+# Keeps xc32-ci caught up with zephyrproject-rtos/zephyr's main, then builds
+# the sample matrix on it. main is left untouched on purpose (it stays a
+# clean mirror, safe for opening PRs upstream) — all xc32 customization
+# (board yaml edits, workflows, Dockerfile) lives only on xc32-ci.
+#
+# The sync push uses the default GITHUB_TOKEN. That's fine here because the
+# build below runs as a second job in this SAME workflow run rather than
+# relying on the push to trigger xc32_samples.yaml separately — GITHUB_TOKEN
+# pushes don't trigger other workflows, so a cross-workflow trigger would
+# have needed a PAT. This design avoids that entirely.
+#
+# NOTE: GitHub only evaluates `schedule:` triggers using the copy of this
+# file on the repository's *default* branch (main), never on xc32-ci, even
+# though the workflow itself only ever acts on xc32-ci. This exact file
+# must also exist on main for the cron below to ever fire.
+
+on:
+  schedule:
+    # Weekly, Monday ~01:00 (nudged off :00 on purpose -- avoids the
+    # top-of-the-hour/day scheduling spike many cron jobs land on).
+    - cron: '7 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.merge.outputs.sha }}
+    steps:
+      - name: Checkout xc32-ci
+        uses: actions/checkout@v4
+        with:
+          ref: xc32-ci
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/zephyrproject-rtos/zephyr.git
+          git fetch upstream main
+          if git merge upstream/main --no-edit; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "::error::Merge conflict between upstream/main and xc32-ci — resolve manually, nothing was pushed."
+            exit 1
+          fi
+
+      - name: Push xc32-ci
+        run: git push origin xc32-ci
+
+  build:
+    needs: sync
+    uses: ./.github/workflows/xc32_samples.yaml
+    with:
+      ref: ${{ needs.sync.outputs.sha }}
