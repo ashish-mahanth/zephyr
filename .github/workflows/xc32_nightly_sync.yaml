@@ -5,16 +5,19 @@ name: Weekly Upstream Sync + XC32 Build
 # clean mirror, safe for opening PRs upstream) — all xc32 customization
 # (board yaml edits, workflows, Dockerfile) lives only on xc32-ci.
 #
-# The sync push uses the default GITHUB_TOKEN. That's fine here because the
-# build below runs as a second job in this SAME workflow run rather than
-# relying on the push to trigger xc32_samples.yaml separately — GITHUB_TOKEN
-# pushes don't trigger other workflows, so a cross-workflow trigger would
-# have needed a PAT. This design avoids that entirely.
-#
 # NOTE: GitHub only evaluates `schedule:` triggers using the copy of this
 # file on the repository's *default* branch (main), never on xc32-ci, even
 # though the workflow itself only ever acts on xc32-ci. This exact file
 # must also exist on main for the cron below to ever fire.
+#
+# The build job dispatches xc32_samples.yaml on xc32-ci via the API rather
+# than `uses: ./.github/workflows/xc32_samples.yaml`: a local reusable-workflow
+# reference resolves against the ref that triggered the *current* run, which
+# for a schedule event is main -- and xc32_samples.yaml deliberately doesn't
+# exist there, so that call failed outright before any job could even start.
+# Dispatching by name/ref instead avoids needing it on main at all; the job
+# then blocks on and reflects that run's real outcome so this workflow's own
+# pass/fail still means something.
 #
 # Every other workflow in this repo was manually disabled so only the 3
 # xc32 ones run. Disabling is per-workflow-path, not per-commit, so it
@@ -41,8 +44,6 @@ jobs:
   sync:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    outputs:
-      sha: ${{ steps.merge.outputs.sha }}
     steps:
       - name: Checkout xc32-ci
         uses: actions/checkout@v4
@@ -57,14 +58,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Merge upstream/main
-        id: merge
         run: |
           set -euo pipefail
           git remote add upstream https://github.com/zephyrproject-rtos/zephyr.git
           git fetch upstream main
-          if git merge upstream/main --no-edit; then
-            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          else
+          if ! git merge upstream/main --no-edit; then
             git merge --abort
             echo "::error::Merge conflict between upstream/main and xc32-ci — resolve manually, nothing was pushed."
             exit 1
@@ -94,6 +92,30 @@ jobs:
 
   build:
     needs: sync
-    uses: ./.github/workflows/xc32_samples.yaml
-    with:
-      ref: ${{ needs.sync.outputs.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - name: Dispatch xc32_samples.yaml on xc32-ci and wait for it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run xc32_samples.yaml --repo "$REPO" --ref xc32-ci
+
+          run_id=""
+          for i in $(seq 1 30); do
+            run_id=$(gh run list --repo "$REPO" --workflow=xc32_samples.yaml --branch xc32-ci \
+              --json databaseId,createdAt,event \
+              --jq "[.[] | select(.event == \"workflow_dispatch\" and .createdAt >= \"$before\")] | sort_by(.createdAt) | .[0].databaseId // empty")
+            [ -n "$run_id" ] && break
+            sleep 5
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find the dispatched xc32_samples.yaml run within timeout"
+            exit 1
+          fi
+
+          echo "Dispatched xc32_samples.yaml run: $run_id"
+          gh run watch "$run_id" --repo "$REPO" --exit-status
