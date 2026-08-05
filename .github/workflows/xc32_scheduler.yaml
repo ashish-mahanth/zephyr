@@ -1,0 +1,54 @@
+name: XC32 Samples Scheduler
+
+# GitHub only ever evaluates a workflow's `schedule:` trigger using the copy
+# of that file on the repository's *default* branch (main) -- never on any
+# other branch, even though the workflow it triggers (xc32_samples.yaml)
+# lives entirely on xc32-samples. This file is the minimal footprint needed
+# to get a periodic run out of that constraint: it does nothing but dispatch
+# xc32_samples.yaml on xc32-samples on the weekly cron below, then waits for
+# and reflects that run's real outcome. It never merges, reads, or otherwise
+# touches anything else on main or xc32-samples.
+
+on:
+  schedule:
+    # Weekly, Monday ~01:00 (nudged off :00 on purpose -- avoids the
+    # top-of-the-hour/day scheduling spike many cron jobs land on).
+    - cron: '7 1 * * 1'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - name: Dispatch xc32_samples.yaml on xc32-samples and wait for it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run xc32_samples.yaml --repo "$REPO" --ref xc32-samples
+
+          run_id=""
+          for i in $(seq 1 30); do
+            run_id=$(gh run list --repo "$REPO" --workflow=xc32_samples.yaml --branch xc32-samples \
+              --json databaseId,createdAt,event \
+              --jq "[.[] | select(.event == \"workflow_dispatch\" and .createdAt >= \"$before\")] | sort_by(.createdAt) | .[0].databaseId // empty")
+            [ -n "$run_id" ] && break
+            sleep 5
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find the dispatched xc32_samples.yaml run within timeout"
+            exit 1
+          fi
+
+          echo "Dispatched xc32_samples.yaml run: $run_id"
+          gh run watch "$run_id" --repo "$REPO" --exit-status
