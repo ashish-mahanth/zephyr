@@ -226,6 +226,12 @@ static const struct device *const devices[] = {
 #ifdef CONFIG_COUNTER_MSPM0_TIMER
 	DEVS_FOR_DT_COMPAT(ti_mspm0_timer_counter)
 #endif
+#ifdef CONFIG_COUNTER_CRSAS_MA2
+	DEVS_FOR_DT_COMPAT(arm_crsas_ma2_counter)
+#endif
+#ifdef CONFIG_COUNTER_CRSAS_MA2_TIMER
+	DEVS_FOR_DT_COMPAT(arm_crsas_ma2_timer)
+#endif
 };
 
 static const struct device *const period_devs[] = {
@@ -1095,7 +1101,14 @@ static void test_short_relative_alarm_instance(const struct device *dev)
 
 	alarm_cfg.ticks = 1;
 
-	for (int i = 0; i < 100; ++i) {
+	/* Slow counters busy-wait several ticks per iteration (~3 s on a 1 Hz
+	 * RTC), so cap their iteration count; fast counters keep the full
+	 * count to preserve coverage.
+	 */
+	int iterations = (counter_get_frequency(dev) < 1000) ?
+		CONFIG_TEST_COUNTER_SHORT_RELATIVE_ALARM_ITERATIONS : 100;
+
+	for (int i = 0; i < iterations; ++i) {
 		err = counter_set_channel_alarm(dev, 0, &alarm_cfg);
 		zassert_equal(0, err,
 				"%s: Failed to set an alarm (err: %d)",

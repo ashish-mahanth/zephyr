@@ -71,6 +71,9 @@ enum net_context_state {
 /** Context is bound to a specific interface */
 #define NET_CONTEXT_BOUND_TO_IFACE BIT(9)
 
+/** A local address has been bound to this context */
+#define NET_CONTEXT_LOCAL_ADDR_SET BIT(10)
+
 struct net_context;
 
 /**
@@ -221,12 +224,22 @@ __net_socket struct net_context {
 	/** Local endpoint address. Note that the values are in network byte
 	 * order.
 	 */
-	struct net_sockaddr_ptr local;
+	union {
+		/** Local endpoint address. */
+		struct net_sockaddr local;
+		/** Storage-typed alias of the local endpoint address. */
+		struct net_sockaddr_storage local_storage;
+	};
 
 	/** Remote endpoint address. Note that the values are in network byte
 	 * order.
 	 */
-	struct net_sockaddr remote;
+	union {
+		/** Remote endpoint address. */
+		struct net_sockaddr remote;
+		/** Storage-typed alias of the remote endpoint address. */
+		struct net_sockaddr_storage remote_storage;
+	};
 
 	/** Connection handle */
 	struct net_conn_handle *conn_handler;
@@ -279,6 +292,12 @@ __net_socket struct net_context {
 #if defined(CONFIG_NET_SOCKETS)
 	/** BSD socket private data */
 	void *socket_data;
+
+	/** Pending socket error (positive errno) reported asynchronously by
+	 *  the network stack. Valid only while the SOCK_ERROR flag is set;
+	 *  consumed via SO_ERROR or by the next blocking socket call.
+	 */
+	int sock_error;
 
 	/** Per-socket packet or connection queues */
 	union {
@@ -525,6 +544,21 @@ static inline bool net_context_is_bound_to_iface(struct net_context *context)
 	NET_ASSERT(context);
 
 	return context->flags & NET_CONTEXT_BOUND_TO_IFACE;
+}
+
+/**
+ * @brief Has a local address been bound to this context.
+ *
+ * @param context Network context.
+ *
+ * @return True if a local address has been assigned to @ref net_context.local,
+ * False otherwise.
+ */
+static inline bool net_context_is_local_addr_set(struct net_context *context)
+{
+	NET_ASSERT(context);
+
+	return context->flags & NET_CONTEXT_LOCAL_ADDR_SET;
 }
 
 /** @cond INTERNAL_HIDDEN */

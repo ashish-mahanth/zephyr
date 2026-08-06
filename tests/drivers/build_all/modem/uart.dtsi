@@ -68,6 +68,12 @@ test_sara_r4: sara_r4 {
 	mdm-reset-gpios = <&test_gpio 0 0>;
 };
 
+test_fibocom_le250: fibocom_le250 {
+	compatible = "fibocom,le250";
+
+	mdm-power-gpios = <&test_gpio 0 0>;
+};
+
 test_simcom_sim7080: sim7080 {
 	compatible = "simcom,sim7080";
 
@@ -113,6 +119,10 @@ test_nordic_nrf91_slm: nordic_nrf91_slm {
 	compatible = "nordic,nrf91-slm";
 
 	mdm-power-gpios = <&test_gpio 0 0>;
+};
+
+test_nordic_nrf91_sm_v2: nordic_nrf91_sm_v2 {
+	compatible = "nordic,nrf91-sm-v2";
 };
 
 test_sqn_gm02s: sqn_gm02s {

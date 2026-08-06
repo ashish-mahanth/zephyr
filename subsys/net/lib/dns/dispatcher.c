@@ -68,7 +68,7 @@ static int dns_dispatch(struct dns_socket_dispatcher *dispatcher,
 					     addr, addrlen,
 					     dns_data, data_len);
 		} else if (dispatcher->pair) {
-			ret = dispatcher->pair->cb(dispatcher, sock,
+			ret = dispatcher->pair->cb(dispatcher->pair, sock,
 						   addr, addrlen,
 						   dns_data, data_len);
 		} else {
@@ -86,7 +86,7 @@ static int dns_dispatch(struct dns_socket_dispatcher *dispatcher,
 					     addr, addrlen,
 					     dns_data, data_len);
 		} else if (dispatcher->pair) {
-			ret = dispatcher->pair->cb(dispatcher, sock,
+			ret = dispatcher->pair->cb(dispatcher->pair, sock,
 						   addr, addrlen,
 						   dns_data, data_len);
 		} else {
@@ -311,6 +311,22 @@ int dns_dispatcher_register(struct dns_socket_dispatcher *ctx)
 		ret = -errno;
 		NET_DBG("Cannot bind DNS socket %d (%d)", ctx->sock, ret);
 		goto out;
+	}
+
+	/* If port 0 was requested, bind() selected an ephemeral local port.
+	 * Store the actual socket name so later dispatcher registrations do
+	 * not treat distinct resolver sockets as duplicate port-0 sockets.
+	 */
+	if (net_sin(&ctx->local_addr)->sin_port == 0) {
+		net_socklen_t socklen = addrlen;
+
+		ret = zsock_getsockname(ctx->sock, &ctx->local_addr, &socklen);
+		if (ret < 0) {
+			ret = -errno;
+			NET_DBG("Cannot get DNS socket %d name (%d)", ctx->sock,
+				ret);
+			goto out;
+		}
 	}
 
 	ctx->pair = NULL;

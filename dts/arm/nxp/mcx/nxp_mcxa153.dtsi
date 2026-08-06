@@ -269,7 +269,8 @@
 		inputmux0: inputmux@40001000 {
 			compatible = "nxp,inputmux";
 			reg = <0x40001000 0x1000>;
-			#inputmux-cells = <2>;
+			#mux-control-cells = <1>;
+			#mux-state-cells = <2>;
 		};
 
 		i3c0: i3c@40002000 {
@@ -360,6 +361,7 @@
 			prescale-glitch-filter-bypass;
 			clk-source = <1>;
 			resolution = <32>;
+			wakeup-source;
 			wakeup-ctrls = <&wuu NXP_WUU_MODULE_6_INT>;
 			status = "disabled";
 		};

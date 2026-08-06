@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <zephyr/arch/cpu.h>
+#include <zephyr/arch/riscv/csr.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
@@ -16,23 +17,89 @@
 
 #include <hal_ch32fun.h>
 
+/*
+ * The CH32H41X drives a dedicated SYSPLL (sourced from HSE or HSI, up to
+ * 480 MHz) that needs a different bring-up sequence and clock-enable register
+ * names than the other WCH parts. Select that path from the RCC clock-source
+ * compatible in devicetree rather than a SoC Kconfig, so the driver follows its
+ * devicetree description instead of changing behaviour per SoC.
+ */
+#define WCH_RCC_SRC_IS_H41X_PLL DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR(0), wch_ch32h41x_pll_clock)
+
+/*
+ * The CH32H41X RCC keeps the CH32V20x/30x clock-enable register ordering (AHB,
+ * then APB2, then APB1) but names them HBPCENR / HB2PCENR / HB1PCENR. Alias the
+ * first clock-enable register so the shared offset arithmetic below keeps working.
+ */
+#if WCH_RCC_SRC_IS_H41X_PLL
+#define WCH_RCC_PCENR_BASE HBPCENR
+#else
+#define WCH_RCC_PCENR_BASE AHBPCENR
+#endif
+
 #define WCH_RCC_CLOCK_ID_OFFSET(id) (((id) >> 5) & 0xFF)
 #define WCH_RCC_CLOCK_ID_BIT(id)    ((id) & 0x1F)
 #define WCH_RCC_PLLMUL_VAL(mul)     (((mul) << 0x12) & RCC_PLLMULL)
 #define WCH_RCC_SYSCLK              DT_PROP(DT_NODELABEL(cpu0), clock_frequency)
+#define WCH_RCC_CH32V00X_PLL_MUL    2 /* CH32V00x has a fixed 2x PLL multiplier */
+#define WCH_RCC_PLL_MUL_DEFAULT     1
+#define WCH_RCC_HSI_PREDIV_DEFAULT  2
+
+#if WCH_RCC_SRC_IS_H41X_PLL
+/*
+ * Bound the clock-readiness spins by hardware cycle count (the mcycle CSR)
+ * instead of a bare loop counter, whose duration would vary with compiler
+ * codegen. Bring-up runs on the ~25 MHz HSI, so ~500000 cycles (~20 ms) sits
+ * comfortably above crystal/PLL start-up while staying a deterministic ceiling.
+ */
+#define WCH_H41X_CLK_TIMEOUT_CYCLES 500000U
+#endif
 
 #if DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR(0), wch_ch32v00x_pll_clock) ||                          \
 	DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR(0), wch_ch32v20x_30x_pll_clock)
 #define WCH_RCC_SRC_IS_PLL 1
-#if DT_NODE_HAS_COMPAT(DT_CLOCKS_CTLR(DT_INST_CLOCKS_CTLR(0)), wch_ch32v00x_hse_clock)
+#define WCH_RCC_PLL_NODE   DT_INST_CLOCKS_CTLR(0)
+
+/* HSE/HSI compatibles are shared across all WCH SoC families. */
+#if DT_NODE_HAS_COMPAT(DT_CLOCKS_CTLR(WCH_RCC_PLL_NODE), wch_ch32v00x_hse_clock)
 #define WCH_RCC_PLL_SRC_IS_HSE 1
-#elif DT_NODE_HAS_COMPAT(DT_CLOCKS_CTLR(DT_INST_CLOCKS_CTLR(0)), wch_ch32v00x_hsi_clock)
+#define WCH_RCC_PLL_SRC_FREQ   DT_PROP(DT_CLOCKS_CTLR(WCH_RCC_PLL_NODE), clock_frequency)
+#elif DT_NODE_HAS_COMPAT(DT_CLOCKS_CTLR(WCH_RCC_PLL_NODE), wch_ch32v00x_hsi_clock)
 #define WCH_RCC_PLL_SRC_IS_HSI 1
+#define WCH_RCC_PLL_SRC_FREQ   DT_PROP(DT_CLOCKS_CTLR(WCH_RCC_PLL_NODE), clock_frequency)
+#else
+#error Unsupported PLL clock source
 #endif
+
+/* CH32V20x/30x has configurable mul and HSI predivider; CH32V00x is a fixed 2x PLL. */
+#if DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR(0), wch_ch32v20x_30x_pll_clock)
+#define WCH_RCC_PLL_MUL    DT_PROP(WCH_RCC_PLL_NODE, mul)
+#define WCH_RCC_HSI_PREDIV DT_PROP(WCH_RCC_PLL_NODE, hsi_prediv)
+#elif DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR(0), wch_ch32v00x_pll_clock)
+#define WCH_RCC_PLL_MUL    WCH_RCC_CH32V00X_PLL_MUL
+#endif
+
 #elif DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR(0), wch_ch32v00x_hse_clock)
 #define WCH_RCC_SRC_IS_HSE 1
 #elif DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR(0), wch_ch32v00x_hsi_clock)
 #define WCH_RCC_SRC_IS_HSI 1
+#else
+#error Unsupported clock source compatible
+#endif
+
+/*
+ * Verify that cpu0 clock-frequency matches the actual PLL configuration so that
+ * peripheral baud rate divisors (USART, SPI, etc.) are computed correctly.
+ */
+#if defined(WCH_RCC_PLL_SRC_IS_HSI) && defined(WCH_RCC_HSI_PREDIV)
+BUILD_ASSERT(WCH_RCC_SYSCLK == (WCH_RCC_PLL_SRC_FREQ / WCH_RCC_HSI_PREDIV) * WCH_RCC_PLL_MUL,
+	     "cpu0 clock-frequency does not match HSI / hsi-prediv * mul");
+#elif defined(WCH_RCC_PLL_SRC_IS_HSI)
+BUILD_ASSERT(WCH_RCC_SYSCLK == WCH_RCC_PLL_SRC_FREQ * WCH_RCC_PLL_MUL,
+	     "cpu0 clock-frequency does not match HSI * mul");
+#elif defined(WCH_RCC_PLL_SRC_IS_HSE)
+BUILD_ASSERT(WCH_RCC_SYSCLK == WCH_RCC_PLL_SRC_FREQ * WCH_RCC_PLL_MUL,
+	     "cpu0 clock-frequency does not match HSE * mul");
 #endif
 
 #if defined(CONFIG_DT_HAS_WCH_CH32V20X_30X_PLL_CLOCK_ENABLED)
@@ -49,6 +116,7 @@ static const uint8_t pllmul_lut[] = {2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
 struct clock_control_wch_rcc_config {
 	RCC_TypeDef *regs;
 	uint8_t mul;
+	uint8_t hsi_prediv;
 };
 
 static int clock_control_wch_rcc_on(const struct device *dev, clock_control_subsys_t sys)
@@ -56,7 +124,7 @@ static int clock_control_wch_rcc_on(const struct device *dev, clock_control_subs
 	const struct clock_control_wch_rcc_config *config = dev->config;
 	RCC_TypeDef *regs = config->regs;
 	uint8_t id = (uintptr_t)sys;
-	uint32_t reg = (uint32_t)(&regs->AHBPCENR + WCH_RCC_CLOCK_ID_OFFSET(id));
+	uint32_t reg = (uint32_t)(&regs->WCH_RCC_PCENR_BASE + WCH_RCC_CLOCK_ID_OFFSET(id));
 	uint32_t val = sys_read32(reg);
 
 	val |= BIT(WCH_RCC_CLOCK_ID_BIT(id));
@@ -73,6 +141,23 @@ static int clock_control_wch_rcc_get_rate(const struct device *dev, clock_contro
 	uint32_t cfgr0 = regs->CFGR0;
 	uint32_t sysclk = CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC;
 	uint32_t ahbclk = sysclk;
+
+#if WCH_RCC_SRC_IS_H41X_PLL
+	switch (cfgr0 & RCC_FPRE) {
+	case RCC_FPRE_DIV4:
+		ahbclk /= 4;
+		break;
+	case RCC_FPRE_DIV2:
+		ahbclk /= 2;
+		break;
+	case RCC_FPRE_DIV1:
+	default:
+		break;
+	}
+
+	*rate = ahbclk;
+	return 0;
+#endif
 
 	if ((cfgr0 & RCC_HPRE_3) != 0) {
 		/* The range 0b1000 divides by a power of 2, where 0b1000 is /2, 0b1001 is /4, etc.
@@ -125,6 +210,66 @@ static void clock_control_wch_rcc_setup_flash(void)
 #endif
 }
 
+#if WCH_RCC_SRC_IS_H41X_PLL
+static bool clock_control_wch_wait_ready(volatile uint32_t *reg, uint32_t mask, uint32_t value)
+{
+	uint32_t start = csr_read(mcycle);
+
+	while ((*reg & mask) != value) {
+		if ((uint32_t)(csr_read(mcycle) - start) > WCH_H41X_CLK_TIMEOUT_CYCLES) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static void clock_control_wch_h41x_init_480m(void)
+{
+	volatile uint32_t *sys_cfgr0 = (volatile uint32_t *)SYS_CFGR0_BASE;
+	uint32_t pll_src = RCC_USBHSPLLSRC_HSI;
+	uint32_t flash_actlr;
+
+	/* Match WCH's 480 MHz SYSCLK / 480 MHz V5F / 120 MHz HCLK setup. */
+	*sys_cfgr0 = (*sys_cfgr0 & ~(0x7U << 4)) | (0x5U << 4);
+
+	RCC->CTLR |= RCC_HSION;
+	(void)clock_control_wch_wait_ready(&RCC->CTLR, RCC_HSIRDY, RCC_HSIRDY);
+
+	RCC->CFGR0 = (RCC->CFGR0 & ~RCC_SW) | RCC_SW_HSI;
+	(void)clock_control_wch_wait_ready(&RCC->CFGR0, RCC_SWS, RCC_SWS_HSI);
+
+	RCC->PLLCFGR &= ~RCC_SYSPLL_GATE;
+	RCC->CTLR &= ~RCC_USBHS_PLLON;
+
+	RCC->CTLR |= RCC_HSEON;
+	if (clock_control_wch_wait_ready(&RCC->CTLR, RCC_HSERDY, RCC_HSERDY)) {
+		pll_src = RCC_USBHSPLLSRC_HSE;
+	}
+
+	RCC->PLLCFGR2 &= ~RCC_USBHSPLL_REFSEL;
+	RCC->PLLCFGR2 = (RCC->PLLCFGR2 & ~RCC_USBHSPLLSRC) | pll_src;
+	(void)clock_control_wch_wait_ready(&RCC->PLLCFGR2, RCC_USBHSPLLSRC, pll_src);
+
+	RCC->CTLR |= RCC_USBHS_PLLON;
+	(void)clock_control_wch_wait_ready(&RCC->CTLR, RCC_USBHS_PLLRDY, RCC_USBHS_PLLRDY);
+
+	RCC->PLLCFGR = (RCC->PLLCFGR & ~RCC_SYSPLL_SEL) | RCC_SYSPLL_USBHS;
+	(void)clock_control_wch_wait_ready(&RCC->PLLCFGR, RCC_SYSPLL_SEL, RCC_SYSPLL_USBHS);
+
+	RCC->CFGR0 = (RCC->CFGR0 & ~(RCC_HPRE | RCC_FPRE)) | RCC_HPRE_DIV1 | RCC_FPRE_DIV4;
+
+	flash_actlr = FLASH->ACTLR;
+	flash_actlr &= ~0x3U;
+	flash_actlr |= FLASH_ACTLR_LATENCY_HCLK_DIV2;
+	FLASH->ACTLR = flash_actlr;
+
+	RCC->PLLCFGR |= RCC_SYSPLL_GATE;
+	RCC->CFGR0 = (RCC->CFGR0 & ~RCC_SW) | RCC_SW_PLL;
+	(void)clock_control_wch_wait_ready(&RCC->CFGR0, RCC_SWS, RCC_SWS_PLL);
+}
+#endif
+
 static DEVICE_API(clock_control, clock_control_wch_rcc_api) = {
 	.on = clock_control_wch_rcc_on,
 	.get_rate = clock_control_wch_rcc_get_rate,
@@ -133,6 +278,19 @@ static DEVICE_API(clock_control, clock_control_wch_rcc_api) = {
 static int clock_control_wch_rcc_init(const struct device *dev)
 {
 	clock_control_wch_rcc_setup_flash();
+
+#if WCH_RCC_SRC_IS_H41X_PLL
+	clock_control_wch_h41x_init_480m();
+
+	RCC->RSTSCKR |= RCC_LSION;
+	while ((RCC->RSTSCKR & RCC_LSIRDY) == 0) {
+	}
+
+	RCC->CTLR |= RCC_CSSON;
+	RCC->INTR = RCC_CSSC | RCC_PLLRDYC | RCC_HSERDYC | RCC_LSIRDYC;
+
+	return 0;
+#endif
 
 	if (IS_ENABLED(CONFIG_DT_HAS_WCH_CH32V00X_PLL_CLOCK_ENABLED) ||
 	    IS_ENABLED(CONFIG_DT_HAS_WCH_CH32V20X_30X_PLL_CLOCK_ENABLED)) {
@@ -177,6 +335,18 @@ static int clock_control_wch_rcc_init(const struct device *dev)
 		const struct clock_control_wch_rcc_config *config = dev->config;
 		uint8_t pllmul = 0x0; /* Default Reset Value */
 
+#if defined(EXTEN_PLL_HSI_PRE)
+		if (IS_ENABLED(WCH_RCC_PLL_SRC_IS_HSI)) {
+			/* DTS binding ensures hsi_prediv value is only either 1 or 2. */
+			if (config->hsi_prediv == 1) {
+				/* Feed HSI directly to PLL without /2 division. */
+				EXTEN->EXTEN_CTR |= EXTEN_PLL_HSI_PRE;
+			} else {
+				/* HSI divided by 2 before PLL (hardware default). */
+				EXTEN->EXTEN_CTR &= ~EXTEN_PLL_HSI_PRE;
+			}
+		}
+#endif
 		for (size_t i = 0; i < ARRAY_SIZE(pllmul_lut); i++) {
 			if (pllmul_lut[i] == config->mul) {
 				pllmul = i;
@@ -210,7 +380,10 @@ static int clock_control_wch_rcc_init(const struct device *dev)
 #define CLOCK_CONTROL_WCH_RCC_INIT(idx)                                                            \
 	static const struct clock_control_wch_rcc_config clock_control_wch_rcc_##idx##_config = {  \
 		.regs = (RCC_TypeDef *)DT_INST_REG_ADDR(idx),                                      \
-		.mul = DT_PROP_OR(DT_INST_CLOCKS_CTLR(idx), mul, 1),                               \
+		.mul = DT_PROP_OR(DT_INST_CLOCKS_CTLR(idx), mul,                              \
+					       WCH_RCC_PLL_MUL_DEFAULT),             \
+		.hsi_prediv = DT_PROP_OR(DT_INST_CLOCKS_CTLR(idx), hsi_prediv,                \
+					       WCH_RCC_HSI_PREDIV_DEFAULT),           \
 	};                                                                                         \
 	DEVICE_DT_INST_DEFINE(idx, clock_control_wch_rcc_init, NULL, NULL,                         \
 			      &clock_control_wch_rcc_##idx##_config, PRE_KERNEL_1,                 \

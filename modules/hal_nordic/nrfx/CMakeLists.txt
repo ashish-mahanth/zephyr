@@ -134,7 +134,7 @@ if(NOT CONFIG_NRF_DONT_USE_STABLE_BSP)
     zephyr_library_sources(${MDK_DIR}/nrf54l/system_nrf54l.c)
   endif()
   zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF71
-                               ${MDK_DIR}/nrf71/nrf7120_enga/system_nrf7120_enga.c)
+                               ${MDK_DIR}/nrf71/system_nrf71.c)
   zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF91
                                ${MDK_DIR}/nrf91/system_nrf91.c)
   zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF92
@@ -158,6 +158,7 @@ endif()
 zephyr_library_sources_ifdef(CONFIG_NRFX_PRS     ${SRC_DIR}/prs/nrfx_prs.c)
 
 zephyr_library_sources_ifdef(CONFIG_NRFX_ADC     ${SRC_DIR}/nrfx_adc.c)
+zephyr_library_sources_ifdef(CONFIG_NRFX_BELLBOARD ${SRC_DIR}/nrfx_bellboard.c)
 zephyr_library_sources_ifdef(CONFIG_NRFX_CLOCK   ${SRC_DIR}/nrfx_clock.c)
 zephyr_library_sources_ifdef(CONFIG_NRFX_CLOCK   ${SRC_DIR}/nrfx_clock_hfclk.c)
 zephyr_library_sources_ifdef(CONFIG_NRFX_CLOCK   ${SRC_DIR}/nrfx_clock_hfclkaudio.c)

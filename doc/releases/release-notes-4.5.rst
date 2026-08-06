@@ -112,6 +112,11 @@ Deprecated APIs and options
   * The :c:struct:`audio_codec_api` struct has been deprecated. Audio codec drivers are now
     expected to use the :c:macro:`DEVICE_API` macro to declare their driver API.
 
+* Build system
+
+  * The ``zephyr_file_copy()`` CMake function has been deprecated. Use the native
+    ``file(COPY_FILE ...)`` CMake command instead.
+
 * CPU Load
 
   * :kconfig:option:`CONFIG_CPU_LOAD_METRIC` and :c:func:`cpu_load_metric_get` are deprecated. The
@@ -182,6 +187,11 @@ New APIs and options
 
 .. zephyr-keep-sorted-start re(^\* \w) ignorecase
 
+* Architectures
+
+  * :kconfig:option:`CONFIG_ARM_MPU_CM7_UNMAPPED_REGION` (Arm Cortex-M7 catch-all MPU region
+    for unmapped addresses, erratum 1013783 workaround)
+
 * Audio
 
   * :c:member:`pcm_stream_cfg.gain_db`
@@ -236,6 +246,13 @@ New APIs and options
   * :c:func:`haptics_set_level`
   * :c:func:`haptics_stream_samples`
 
+* HWSPINLOCK
+
+  * :c:macro:`HWSPINLOCK_SPINLOCK_ARRAY_DT_DEFINE`
+  * :c:macro:`HWSPINLOCK_SPINLOCK_ARRAY_DT_INST_DEFINE`
+  * :c:macro:`HWSPINLOCK_COMMON_CONFIG_FROM_DT_NODE`
+  * :c:macro:`HWSPINLOCK_COMMON_CONFIG_FROM_DT_INST`
+
 * Kconfig
 
   * Add ``dt_partition_mtd`` preprocessor function (:github:`111599`)
@@ -244,6 +261,9 @@ New APIs and options
 
   * :c:func:`k_thread_runtime_stats_is_enabled`
   * :c:func:`atomic_test_and_set_bit_to`
+  * :c:macro:`K_MSGQ_DEFINE_STATIC`
+  * :c:macro:`K_MSGQ_DEFINE_TYPE`
+  * :c:macro:`K_MSGQ_DEFINE_STATIC_TYPE`
 
 * LoRa
 
@@ -255,6 +275,30 @@ New APIs and options
   * Add :c:func:`net_eth_set_if_type_wifi` to set the ethernet interface type to Wi-Fi.
   * Add :c:func:`net_dhcpv4_set_reboot_hint` to seed the DHCPv4 client with a
     previously leased address for INIT-REBOOT.
+  * Add an mDNS responder interface policy
+    (:kconfig:option:`CONFIG_MDNS_RESPONDER_IFACE_POLICY_ALLOWLIST`,
+    :kconfig:option:`CONFIG_MDNS_RESPONDER_IFACE_POLICY_DENYLIST`) together with
+    :kconfig:option:`CONFIG_MDNS_RESPONDER_IFACE_LIST` to control on which
+    network interfaces the mDNS responder operates.
+  * Add :c:func:`mdns_responder_enable_iface` and
+    :c:func:`mdns_responder_disable_iface`
+    (:kconfig:option:`CONFIG_MDNS_RESPONDER_RUNTIME_IFACE_CONTROL`) to enable or
+    disable the mDNS responder on a network interface at runtime.
+
+* Power Management
+
+  * :c:macro:`LOG_DBG_PM_DEVICE_RUNTIME_GET`
+  * :c:macro:`LOG_WRN_PM_DEVICE_RUNTIME_GET`
+  * :c:macro:`LOG_ERR_PM_DEVICE_RUNTIME_GET`
+  * :c:macro:`LOG_DBG_PM_DEVICE_RUNTIME_PUT`
+  * :c:macro:`LOG_WRN_PM_DEVICE_RUNTIME_PUT`
+  * :c:macro:`LOG_ERR_PM_DEVICE_RUNTIME_PUT`
+  * :c:macro:`LOG_INST_DBG_PM_DEVICE_RUNTIME_GET`
+  * :c:macro:`LOG_INST_WRN_PM_DEVICE_RUNTIME_GET`
+  * :c:macro:`LOG_INST_ERR_PM_DEVICE_RUNTIME_GET`
+  * :c:macro:`LOG_INST_DBG_PM_DEVICE_RUNTIME_PUT`
+  * :c:macro:`LOG_INST_WRN_PM_DEVICE_RUNTIME_PUT`
+  * :c:macro:`LOG_INST_ERR_PM_DEVICE_RUNTIME_PUT`
 
 * Ring buffer
 
@@ -313,6 +357,10 @@ New Drivers
 
   * VIRTIO input device (:dtcompatible:`virtio,input`).
 
+* Sensors
+
+  * Analog Devices ADXL313 3-axis accelerometer (:dtcompatible:`adi,adxl313`).
+
 * Clock Monitor
 
   * :dtcompatible:`nxp,cmu-fc` — NXP Clock Monitoring Unit (Frequency Check)
@@ -348,11 +396,18 @@ Libraries / Subsystems
 
   * Added AES CFB and OFB cipher mode support.
 
+* Mbed TLS
+
   * Mbed TLS was updated to version 4.1.1. Release notes can be found
     `here <https://github.com/Mbed-TLS/mbedtls/releases/tag/mbedtls-4.1.1>`_.
 
   * TF-PSA-Crypto was updated to version 1.1.1. Release notes can be found
     `here <https://github.com/Mbed-TLS/TF-PSA-Crypto/releases/tag/tf-psa-crypto-1.1.1>`_.
+
+* TF-M
+
+  * TF-M was updated from version 2.2.2 to version 2.3.0. Release notes can be
+    found `here <https://trustedfirmware-m.readthedocs.io/en/tf-mv2.3.0/releases/2.3.0.htm>`_.
 
 * DFU
 
@@ -380,19 +435,21 @@ Libraries / Subsystems
 
 Devicetree
 **********
+* Nodes can now use phandles to refer to their children without causing a cycle in the
+  dependency graph and a build error. See :ref:`dt-bindings-dependency-mode` how to
+  use this new feature. (:github:`108892`)
 
   * :c:macro:`DT_NODELABEL_C_TOKEN`
   * :c:macro:`DT_NODELABEL_C_TOKEN_BY_IDX`
 
-
-* TF-M
-
-  * TF-M was updated from version 2.2.2 to version 2.3.0. Release notes can be
-    found at:
-    https://trustedfirmware-m.readthedocs.io/en/tf-mv2.3.0/releases/2.3.0.html
-
 Other notable changes
 *********************
+
+* Build system
+
+  * The minimum required CMake version has been raised to 3.28.0, a version satisfied by the CMake package in the
+    Ubuntu 24.04 LTS package repositories. See the :ref:`migration guide <migration_4.5>` for
+    options if your distribution ships an older version.
 
 * Kernel
 
@@ -426,6 +483,23 @@ Other notable changes
     key. The first entry is the key the application is signed with and the rest are
     verification-only public keys. See :ref:`build-signing`.
 
+* Arm
+
+  * The non-secure variant of
+      :zephyr:board:`Arm Musca-S1 <v2m_musca_s1>` (``v2m_musca_s1/musca_s1/ns``)
+      has been removed due to TF-M removing platform support for this board.
+
+  * As a consequence of the above, the secure variant of
+    :zephyr:board:`Arm Musca-S1 <v2m_musca_s1>` (``v2m_musca_s1``) has been deprecated.
+    This is to avoid a confusing state of partial support.
+
 ..
   Any more descriptive subsystem or driver changes. Do you really want to write
   a paragraph or is it enough to link to the api/driver/Kconfig/board page above?
+
+Trusted Firmware-A
+******************
+
+* ``CONFIG_TFA_BUILD_FIP`` is introduced to configure FIP (Firmware Image Package) generation.
+  FIP generation is by default disabled, but can be enabled by setting ``CONFIG_TFA_BUILD_FIP=y``
+  in ``prj.conf`` or for custom boards, in the board's ``<board>_defconfig`` file.
