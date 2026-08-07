@@ -1,0 +1,89 @@
+name: XC32 Samples Teams Notification
+
+# workflow_run triggers are evaluated only from the copy of this file on the
+# repository's *default* branch (main) -- the same restriction as
+# `schedule` -- even though the workflow this reacts to (xc32_samples.yaml)
+# lives entirely on xc32-samples. That's the only reason this file exists
+# here rather than there.
+#
+# Fires for every completed run of "XC32 Samples (Microchip + Atmel SAM0
+# boards)", on any branch, success or failure alike -- posts an Adaptive
+# Card to a Teams channel via a Power Automate "Post to a channel when a
+# webhook request is received" flow. Requires a TEAMS_WEBHOOK_URL repo
+# secret pointing at that flow's HTTP POST URL. The Adaptive Card JSON
+# below assumes the flow's trigger schema was defined by pasting a sample
+# card in that shape (Teams' own default "Post card in a chat or channel"
+# template) -- adjust the field names below if your flow expects a
+# different schema.
+
+on:
+  workflow_run:
+    # `gh api .../actions/workflows` shows this workflow's registered name as
+    # the older "XC32 Samples (Microchip boards)" -- stale relative to the
+    # current file's `name:` (every individual run's own .name field reports
+    # the current one), likely never refreshed since the boards list grew to
+    # include Atmel sam0/*. workflow_run matching may use either depending
+    # on internal caching, so both are listed to be safe.
+    workflows: ["XC32 Samples (Microchip boards)", "XC32 Samples (Microchip + Atmel SAM0 boards)"]
+    types: [completed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post Adaptive Card to Teams
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -eu
+
+          if [ "$CONCLUSION" = "success" ]; then
+            title="XC32 Samples succeeded"
+          else
+            title="XC32 Samples: $CONCLUSION"
+          fi
+
+          payload=$(cat <<EOF
+          {
+            "type": "message",
+            "attachments": [
+              {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                  "type": "AdaptiveCard",
+                  "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                  "version": "1.4",
+                  "body": [
+                    {
+                      "type": "TextBlock",
+                      "text": "$title",
+                      "weight": "Bolder",
+                      "size": "Medium"
+                    },
+                    {
+                      "type": "FactSet",
+                      "facts": [
+                        { "title": "Branch", "value": "$BRANCH" },
+                        { "title": "Run", "value": "#$RUN_NUMBER" }
+                      ]
+                    }
+                  ],
+                  "actions": [
+                    {
+                      "type": "Action.OpenUrl",
+                      "title": "View run",
+                      "url": "$RUN_URL"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+          EOF
+          )
+
+          curl -sf -H "Content-Type: application/json" -d "$payload" "$TEAMS_WEBHOOK_URL"
