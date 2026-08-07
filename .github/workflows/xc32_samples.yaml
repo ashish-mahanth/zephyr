@@ -1,0 +1,214 @@
+name: XC32 Samples (Microchip + Atmel SAM0 boards)
+
+# Builds a 9-sample matrix across every board that supports the XC32
+# toolchain: Microchip pic32c/*, sam/* (minus sama7d65/sama7g54 -- XC32
+# v6.00's linker crashes linking their Cortex-A/R port, see the
+# "boards: microchip: fix xc32 support" commit), and the Atmel sam0/*
+# boards. Build-only: CI runners have no Microchip hardware to flash.
+#
+# Boards don't need to declare `xc32` in their board yaml `toolchain:` list
+# for this: --force-toolchain below bypasses twister's board/toolchain
+# support filter entirely, so it's -p/-T (curated explicitly below) that
+# controls what actually gets attempted, not the boards' own yaml files.
+#
+# XC32 itself comes prebaked in a container image built by
+# xc32_toolchain_image.yaml — nothing is installed on every run. Rebuild that
+# image (workflow_dispatch) whenever the XC32 version changes. Device Family
+# Packs are NOT baked into that image: this workflow fetches the latest
+# release of each pack itself on every run (see "Download Device Family
+# Packs" below), so builds always use current DFPs without needing to
+# rebuild the image.
+
+on:
+  push:
+    branches:
+      - 'xc32-samples'
+  pull_request:
+    paths:
+      - 'boards/microchip/**'
+      - 'boards/atmel/sam0/**'
+      - 'soc/microchip/**'
+      - 'cmake/**/xc32/**'
+      - '.github/workflows/xc32_samples.yaml'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref/SHA to build (defaults to the triggering ref)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # 60 min was too tight once the matrix grew to 18 boards x 9 samples --
+    # a run hit exactly that limit and got killed (GitHub reports a
+    # timeout as "cancelled", not "failure", which is why it wasn't
+    # obvious at a glance).
+    timeout-minutes: 180
+    # XC32 is prebaked here; see .github/docker/xc32-toolchain and
+    # xc32_toolchain_image.yaml. XC32_TOOLCHAIN_PATH is baked into the image
+    # as ENV. XC_PACK_DIR points at a workspace-local directory instead --
+    # DFPs are fetched fresh into it below, not baked into the image.
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/zephyr-xc32-toolchain:v6.00
+    env:
+      XC_PACK_DIR: ${{ github.workspace }}/dfp-packs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: zephyr
+          # Shallow: this job only builds, it never needs git history, and
+          # a full clone of this monorepo's .git alone eats multiple GB —
+          # a real contributor to the "No space left on device" failure
+          # seen once already, on top of the multi-GB custom image and all
+          # of west's own module checkouts.
+          fetch-depth: 1
+          ref: ${{ inputs.ref || github.sha }}
+
+      # Fetches the latest release of each Device Family Pack fresh on every
+      # run instead of relying on what's baked into the toolchain image (see
+      # .github/docker/xc32-toolchain/Dockerfile's history for why that used
+      # to be baked in). Pack names map to the SoCs used by
+      # boards/microchip/{pic32c,sam}/* and boards/atmel/sam0/*:
+      #   pic32ck2051gc01144       -> Microchip.PIC32CK-GC_DFP
+      #   pic32cm5112gc00100       -> Microchip.PIC32CM-GC00_DFP
+      #   pic32cm5164jh01*         -> Microchip.PIC32CM-JH_DFP   (not "-JH01_DFP")
+      #   pic32cm6408pl10048       -> Microchip.PIC32CM-PL_DFP
+      #   pic32cm5112sg00100       -> Microchip.PIC32CM-SG00_DFP
+      #   pic32cx1025sg41128       -> Microchip.PIC32CX-SG41_DFP (per-die; the
+      #                                combined "-SG_DFP" pack only covers the
+      #                                0525 die, not 1025/SG41/SG61)
+      #   pic32cx1025sg61128       -> Microchip.PIC32CX-SG61_DFP
+      #   pic32cz8110ca80208       -> Microchip.PIC32CZ-CA80_DFP (per-die, not combined "-CA_DFP")
+      #   pic32cz8110ca90208       -> Microchip.PIC32CZ-CA90_DFP
+      #   atsame54p20a             -> Microchip.SAME54_DFP
+      #   samc21/samr21/samd21/    -> Microchip.SAMC21_DFP / SAMR21_DFP /
+      #   samd20/saml21/samr34        SAMD21_DFP / SAMD20_DFP / SAML21_DFP /
+      #                                SAMR34_DFP
+      - name: Download Device Family Packs
+        run: |
+          set -eux
+          mkdir -p "$XC_PACK_DIR"
+          for name in \
+              "Microchip.PIC32CK-GC_DFP" \
+              "Microchip.PIC32CM-GC00_DFP" \
+              "Microchip.PIC32CM-JH_DFP" \
+              "Microchip.PIC32CM-PL_DFP" \
+              "Microchip.PIC32CM-SG00_DFP" \
+              "Microchip.PIC32CX-SG41_DFP" \
+              "Microchip.PIC32CX-SG61_DFP" \
+              "Microchip.PIC32CZ-CA80_DFP" \
+              "Microchip.PIC32CZ-CA90_DFP" \
+              "Microchip.SAME54_DFP" \
+              "Microchip.SAMC21_DFP" \
+              "Microchip.SAMR21_DFP" \
+              "Microchip.SAMD21_DFP" \
+              "Microchip.SAMD20_DFP" \
+              "Microchip.SAML21_DFP" \
+              "Microchip.SAMR34_DFP" \
+          ; do
+              ver=$(curl -fsSL "https://packs.download.microchip.com/${name}.pdsc" \
+                    | grep -o '<release version="[^"]*"' \
+                    | head -1 \
+                    | sed -E 's/.*version="([^"]*)"/\1/')
+              if [ -z "${ver}" ]; then
+                  echo "Could not resolve latest version for ${name}" >&2
+                  exit 1
+              fi
+              echo "Resolved ${name} -> ${ver}"
+              dest="${XC_PACK_DIR}/${name}"
+              mkdir -p "${dest}"
+              curl -fSL -o /tmp/pack.zip \
+                  "https://packs.download.microchip.com/${name}.${ver}.atpack"
+              unzip -q -o /tmp/pack.zip -d "${dest}"
+              rm /tmp/pack.zip
+          done
+
+      # No "Set up Python" step: actions/setup-python breaks inside a
+      # custom container (mounted pip3 points at a host path that doesn't
+      # exist in here). Python 3.12 is baked into the image instead.
+
+      # Not using zephyrproject-rtos/action-zephyr-setup: it unconditionally
+      # downloads a Zephyr SDK "host tools" bundle regardless of the
+      # `toolchains` input (only cross-compilers are skippable, not host
+      # tools), and that step's own installer fails inside this container
+      # for reasons its suppressed output (redirected to /dev/null inside
+      # the action's own script) never surfaces. We don't need host tools
+      # anyway: no QEMU/emulation (--build-only) and XC32 is the compiler.
+      # This replicates just the parts we do need from that action.
+      - name: Set up west workspace
+        run: |
+          pip3 install west
+          west init -l zephyr --mf west.yml
+          west update -o=--depth=1 -n
+          west packages pip --install --ignore-venv-check || pip3 install -r zephyr/scripts/requirements.txt
+
+      - name: Build samples with XC32
+        working-directory: zephyr
+        env:
+          ZEPHYR_TOOLCHAIN_VARIANT: xc32
+        run: |
+          west twister \
+            --build-only \
+            --inline-logs \
+            --force-color \
+            --force-toolchain \
+            -v \
+            --runtime-artifact-cleanup \
+            -p pic32ck_gc01_cult \
+            -p pic32cm_gc00_cpro \
+            -p pic32cm_jh01_cnano \
+            -p pic32cm_jh01_cpro \
+            -p pic32cm_pl10_cnano \
+            -p pic32cm_sg00_cpro \
+            -p pic32cx_sg41_cult \
+            -p pic32cx_sg61_cult \
+            -p pic32cz_ca80_cult \
+            -p pic32cz_ca90_cult \
+            -p sam_e54_cult \
+            -p sam_e54_xpro \
+            -p samc21n_xpro \
+            -p samd20_xpro \
+            -p samd21_xpro \
+            -p saml21_xpro \
+            -p samr21_xpro \
+            -p samr34_xpro \
+            -T samples/hello_world \
+            -T samples/cpp/hello_world \
+            -T samples/basic/blinky \
+            -T samples/kernel/msg_queue \
+            -T samples/kernel/condition_variables/simple \
+            -T samples/application_development/external_lib \
+            -T samples/philosophers \
+            -T samples/data_structures/rbtree \
+            -T samples/userspace/hello_world_user
+
+      - name: Write job summary
+        if: always()
+        run: |
+          if [ -f zephyr/twister-out/twister.json ]; then
+            python3 zephyr/.github/scripts/xc32_twister_summary.py zephyr/twister-out/twister.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "twister.json not found -- build likely failed before twister ran" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload twister logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twister-artifacts
+          if-no-files-found: ignore
+          path: |
+            zephyr/twister-out/**/build.log
+            zephyr/twister-out/twister.json
+            zephyr/twister-out/twister_report.xml
